@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - TEK DOSYA CALISTIRICI
+RoadGuardian-CV - TEK DOSYA CALISTIRICI
 
 Bu dosyayi calistirinca trafik videosu; arac takibi + plaka okuma (OCR) +
 USTTE HOLOGRAM plaka paneli ile birlikte otomatik baslar. Baska bir sey

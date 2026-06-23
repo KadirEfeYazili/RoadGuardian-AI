@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - Plaka Takip / Onbellek Modulu
+RoadGuardian-CV - Plaka Takip / Onbellek Modulu
 
 Arac takibi (TrafficTracker) ile plaka okuma (PlateReader) arasindaki kopru.
 
@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from core.config import settings  # noqa: E402
-from traffic_module.plate_ocr import PlateReader  # noqa: E402
+from traffic_module.plate_ocr import PlateReader, plate_format_score  # noqa: E402
 
 # Arac basina saklanan max okuma sayisi (bellek sinirlama).
 _MAX_READS = 60
@@ -35,26 +35,36 @@ class PlateRecord:
     """Bir arac ID'sine ait plaka okuma gecmisi ve KARAKTER OYLAMASI.
 
     Gosterilen plaka tek bir okuma degil, tum okumalarin uzlasisidir:
-      1) Okumalar UZUNLUGA gore gruplanir; toplam guveni en yuksek uzunluk secilir
-         (kisa/bozuk okumalari ve farkli uzunluk gurultusunu eler).
-      2) O uzunluktaki okumalarda HER KARAKTER KONUMU icin en cok guven alan
+      1) Her okuma, ham OCR guveni VE bicim gecerliligi ile AGIRLIKLANIR:
+         bilinen bir ulke plaka bicimine uyan okumalar (orn. "34KLE88") daha
+         fazla oy alir; bicimsiz gurultu (orn. "02XQ") geride kalir.
+      2) Okumalar UZUNLUGA gore gruplanir; toplam agirligi en yuksek uzunluk
+         secilir (farkli uzunluk gurultusunu eler).
+      3) O uzunluktaki okumalarda HER KARAKTER KONUMU icin en cok agirlik alan
          karakter secilir. Boylece 'AP05JEO' / 'ZP05JEO' gibi 1 harf farkli
          okumalar tek dogru plakada birlesir.
+
+    DOGRULAMA: Plaka, ancak en az ``OCR_MIN_VOTES_TO_SHOW`` oy biriktikten ve
+    makul bir uzunluga ulastiktan SONRA "gosterime hazir" (``ready``) sayilir.
+    Bu, ilk hatali okumanin (gecici "02...") ekranda gosterilmesini engeller.
     """
 
-    reads: list[tuple[str, float]] = field(default_factory=list)  # (metin, guven)
+    # (metin, ham_guven, agirlik) -> agirlik = guven * bicim bonusu
+    reads: list[tuple[str, float, float]] = field(default_factory=list)
     plate_box: tuple[int, int, int, int] | None = None            # son plaka konumu
     last_attempt_frame: int = -10_000
 
     def add_vote(self, text: str, conf: float) -> None:
-        self.reads.append((text, conf))
+        # Bicimsel olarak gecerli okumalari odullendir (dogrulama agirligi).
+        weight = conf * (1.0 + settings.OCR_VALID_FORMAT_BONUS * plate_format_score(text))
+        self.reads.append((text, conf, weight))
         if len(self.reads) > _MAX_READS:
             self.reads.pop(0)
 
     def _length_scores(self) -> dict[int, float]:
         scores: dict[int, float] = defaultdict(float)
-        for t, c in self.reads:
-            scores[len(t)] += c
+        for t, _c, w in self.reads:
+            scores[len(t)] += w
         return scores
 
     def _dominant_length(self) -> int | None:
@@ -63,27 +73,47 @@ class PlateRecord:
 
     @property
     def text(self) -> str:
-        """Karakter oylamasiyla uzlasi plaka metni."""
+        """Agirlikli karakter oylamasiyla uzlasi plaka metni."""
         dom = self._dominant_length()
         if not dom:
             return ""
         chars = []
         for i in range(dom):
             col: dict[str, float] = defaultdict(float)
-            for t, c in self.reads:
+            for t, _c, w in self.reads:
                 if len(t) == dom:
-                    col[t[i]] += c
+                    col[t[i]] += w
             chars.append(max(col, key=col.get))
         return "".join(chars)
 
     @property
     def conf(self) -> float:
-        """Uzlasi uzunlugundaki okumalarin gorulen en yuksek guveni."""
+        """Uzlasi uzunlugundaki okumalarin gorulen en yuksek HAM guveni."""
         dom = self._dominant_length()
         if not dom:
             return 0.0
-        group = [c for t, c in self.reads if len(t) == dom]
+        group = [c for t, c, _w in self.reads if len(t) == dom]
         return max(group) if group else 0.0
+
+    @property
+    def votes(self) -> int:
+        """Uzlasi uzunlugunu destekleyen okuma (oy) sayisi."""
+        dom = self._dominant_length()
+        if not dom:
+            return 0
+        return sum(1 for t, _c, _w in self.reads if len(t) == dom)
+
+    @property
+    def ready(self) -> bool:
+        """Plaka ekranda gosterilmeye hazir mi? (dogrulama kapisi).
+
+        En az ``OCR_MIN_VOTES_TO_SHOW`` oy birikmeli ve uzlasi metni makul
+        uzunlukta olmali. Boylece gecici/ilk hatali okumalar gosterilmez.
+        """
+        return (
+            self.votes >= settings.OCR_MIN_VOTES_TO_SHOW
+            and len(self.text) >= settings.OCR_MIN_PLATE_CHARS
+        )
 
     @property
     def locked(self) -> bool:
@@ -104,6 +134,7 @@ class PlateTracker:
     reattempt_interval: int = settings.OCR_REATTEMPT_INTERVAL
     max_per_frame: int = settings.OCR_MAX_PER_FRAME
     locked_refresh_mult: int = settings.OCR_LOCKED_REFRESH_MULT
+    detect_interval: int = settings.PLATE_DETECT_INTERVAL
 
     def __post_init__(self):
         self.records: dict[int, PlateRecord] = {}
@@ -159,6 +190,12 @@ class PlateTracker:
         """
         self._frame_idx += 1
 
+        # CPU tasarrufu: plaka tespiti + OCR yalnizca her ``detect_interval``
+        # karede bir yapilir. Aradaki karelerde mevcut (hazir) kayitlar aynen
+        # cizilmeye devam eder; plaka konumu son tespitten korunur.
+        if self.detect_interval > 1 and (self._frame_idx % self.detect_interval) != 0:
+            return {tid: r for tid, r in self.records.items() if r.ready}
+
         # 1) Tum kare uzerinde plakalari tespit et.
         plate_boxes = self.reader.detect_plates(frame)
 
@@ -198,12 +235,13 @@ class PlateTracker:
             text, conf = reading
             rec.add_vote(text, conf)
 
-        # 4) Yalnizca metni olan kayitlari dondur.
-        return {tid: r for tid, r in self.records.items() if r.text}
+        # 4) Yalnizca DOGRULANMIS (gosterime hazir) kayitlari dondur.
+        #    ready: yeterli oy + makul uzunluk -> ilk hatali okuma gosterilmez.
+        return {tid: r for tid, r in self.records.items() if r.ready}
 
     def get(self, track_id: int) -> PlateRecord | None:
         rec = self.records.get(track_id)
-        return rec if (rec and rec.text) else None
+        return rec if (rec and rec.ready) else None
 
     def cleanup(self, active_ids: set[int]) -> None:
         """Ekrandan cikan araclarin kayitlarini temizler (bellek icin)."""

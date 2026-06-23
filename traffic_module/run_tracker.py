@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - Basit Canli Goruntuleyici (Trafik Takip)
+RoadGuardian-CV - Basit Canli Goruntuleyici (Trafik Takip)
 
 Bu betik, trafik videosunu YOLO takibiyle birlikte CANLI bir pencerede oynatir.
 Test ederken sonucu aninda gormek icin tasarlanmistir.
@@ -25,7 +25,7 @@ from traffic_module.tracker import TrafficTracker  # noqa: E402
 # kuculterek gosterilir (orijinal isleme/kayit tam cozunurlukte kalir).
 DISPLAY_MAX_WIDTH = 1280
 
-WINDOW_NAME = "RoadGuardian-AI | Trafik Takibi  (cikis: q)"
+WINDOW_NAME = "RoadGuardian-CV | Trafik Takibi  (cikis: q)"
 
 
 def _fit_to_screen(frame):

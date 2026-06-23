@@ -20,9 +20,17 @@ OUTPUT_DIR = BASE_DIR / "output"
 class Config:
     """Projenin genel ayarlarini tutan merkezi sinif."""
 
+    # --- Dizinler (modul seviyesinden erisilebilir kisayollar) ---
+    BASE_DIR = BASE_DIR
+    DATA_DIR = DATA_DIR
+    MODELS_DIR = MODELS_DIR
+    OUTPUT_DIR = OUTPUT_DIR
+
     # --- Model Yollari ---
     # Trafik modulu icin nesne tespit modeli (araclar).
-    TRAFFIC_MODEL_PATH = MODELS_DIR / "yolo11n.pt"
+    # yolo11s (small): nano'dan belirgin daha dogru sinif tahmini
+    # (otomobil/kamyon/otobus karismasi azalir), CPU'da hala kabul edilebilir.
+    TRAFFIC_MODEL_PATH = MODELS_DIR / "yolo11s.pt"
     # Plaka tespiti icin ozel YOLO modeli (license_plate sinifi).
     PLATE_MODEL_PATH = MODELS_DIR / "license_plate_detector.pt"
     # Surucu modulu icin yuz/goz tespit modeli.
@@ -48,24 +56,49 @@ class Config:
     IOU_THRESHOLD = 0.5          # NMS icin IoU esigi
     TRACKER_CONFIG = "bytetrack.yaml"  # YOLO yerlesik tracker konfigurasyonu
 
+    # --- Performans Modlari ---
+    # CPU'da hiz/dogruluk dengesi. UI'dan ya da --perf ile secilir.
+    #   fast     : en hizli (kucuk model + kucuk imgsz + plaka seyrek tespit)
+    #   balanced : varsayilan denge
+    #   accurate : en dogru (buyuk imgsz + her kare plaka tespiti)
+    PERF_MODE = "balanced"
+    PERF_PRESETS = {
+        "fast":     {"track_model": "yolo11n.pt", "track_imgsz": 480,
+                     "plate_detect_interval": 3},
+        "balanced": {"track_model": "yolo11s.pt", "track_imgsz": 512,
+                     "plate_detect_interval": 2},
+        "accurate": {"track_model": "yolo11s.pt", "track_imgsz": 640,
+                     "plate_detect_interval": 1},
+    }
+
     # COCO veri setinde arac sayilan sinif id'leri:
     # 2: car, 3: motorcycle, 5: bus, 7: truck
     VEHICLE_CLASSES = [2, 3, 5, 7]
 
     # --- Plaka Okuma (OCR / ANPR) Ayarlari ---
-    # Plaka tespit modelinin minimum guven skoru.
-    PLATE_CONFIDENCE_THRESHOLD = 0.3
+    # Plaka tespit modelinin minimum guven skoru. Dusuk tutmak, uzak/kucuk
+    # plakalari da yakalar (daha cok arac okunur); gurultu okumalar oylama +
+    # bicim dogrulamasi ile elenir.
+    PLATE_CONFIDENCE_THRESHOLD = 0.20
+    # Plaka tespiti HER karede degil, bu kadar karede bir yapilir (CPU tasarrufu;
+    # perf moduna gore PERF_PRESETS tarafindan ezilir). OCR zaten kisitli oldugu
+    # icin her kare tespit gereksizdir.
+    PLATE_DETECT_INTERVAL = 2
     # EasyOCR dil listesi ('en' Latin harf/rakamlari kapsar; TR plakalar da Latin).
     OCR_LANGUAGES = ["en"]
     # GPU yoksa CPU'da calisir (bu makinede CUDA yok -> False).
     OCR_USE_GPU = False
-    # Plaka kirpintisi OCR'dan once bu kat buyutulur (kucuk plakalar icin sart).
-    OCR_UPSCALE = 4
+    # Plaka kirpintisi OCR'dan once bu HEDEF GENISLIGE buyutulur/kuculur.
+    # (Eskiden sabit 4x; cok buyuk plakalarda OCR'i yavaslatiyordu.) ~200px
+    # EasyOCR icin yeterli ve hizli.
+    OCR_TARGET_WIDTH = 200
+    # Eski sabit-kat buyutme (artik OCR_TARGET_WIDTH kullanilir; geriye uyum icin).
+    OCR_UPSCALE = 2
     # OCR sadece bir arac icin guvenilir okuma yapilana kadar denenir; ayrica
     # ayni arac icin en az bu kadar kare gecmeden tekrar denenmez (CPU dostu).
-    OCR_REATTEMPT_INTERVAL = 8
+    OCR_REATTEMPT_INTERVAL = 6
     # Tek bir karede en fazla kac plaka OCR'a sokulsun (CPU yukunu sinirlar).
-    OCR_MAX_PER_FRAME = 4
+    OCR_MAX_PER_FRAME = 3
     # Bir okumanin "kalici kabul" edilmesi icin gereken min OCR guveni.
     OCR_ACCEPT_CONFIDENCE = 0.45
     # Gecerli sayilacak min plaka karakter sayisi (gurultu metni eler).
@@ -73,6 +106,16 @@ class Config:
     OCR_MIN_PLATE_CHARS = 5
     # Tek bir OCR parcasinin oya katilmasi icin gereken min guven.
     OCR_FRAGMENT_MIN_CONF = 0.10
+
+    # --- Plaka Dogrulama (Validation) Ayarlari ---
+    # Plaka EKRANDA gosterilmeden once en az bu kadar okuma (oy) birikmeli.
+    # Bu sayede ilk hatali okuma (orn. "34..." yerine "02...") ekranda
+    # gosterilmez; once oylama bir uzlasiya ulasir. (>=2 onerilir.)
+    OCR_MIN_VOTES_TO_SHOW = 2
+    # Plaka metni bilinen bir ulke BICIMINE uyuyorsa oyu bu kat ile carpilir.
+    # Boylece bicimsel olarak gecerli (dogru) okumalar gecersizleri yener ->
+    # "34KLE88" gibi gecerli okuma, "02..." gibi bozuk okumayi hizla geride birakir.
+    OCR_VALID_FORMAT_BONUS = 2.0
 
     # --- Plaka Oylama (Kararlilik) Ayarlari ---
     # Plaka metni kare kare degil, arac basina OYLAMA ile belirlenir: her okuma
@@ -90,6 +133,12 @@ class Config:
     # Hologram panelinde plakanin solundaki mavi banda yazilacak ulke kodu.
     # Turk plakalari icin "TR"; bu UK test videosu icin "GB" yapabilirsin.
     PLATE_COUNTRY_CODE = "TR"
+    # Ulke kodu nasil belirlensin:
+    #   "auto"  -> plaka bicimine bakarak tahmin et (karisik trafik icin),
+    #              karar verilemezse PLATE_COUNTRY_CODE'a duser.
+    #   "force" -> her plakaya PLATE_COUNTRY_CODE'u yaz (tek-ulkeli videolarda
+    #              en guvenilir; UI'dan TR/GB secilince bu kullanilir).
+    PLATE_COUNTRY_MODE = "auto"
 
     # --- Hiz Olcumu Ayarlari ---
     # Goruntudeki piksel mesafesini gercek dunyaya cevirmek icin kalibrasyon

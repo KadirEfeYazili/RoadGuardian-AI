@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - Trafik Takip Modulu (Tracker)
+RoadGuardian-CV - Trafik Takip Modulu (Tracker)
 
 YOLO'nun yerlesik takip ozelligini (model.track) kullanarak araclari kareler
 arasinda takip eder ve her araca benzersiz bir ID atar. Tespit edilen her arac
@@ -25,8 +25,10 @@ class TrafficTracker:
     bir ID atayarak bounding box + ID gosterimi yapar.
     """
 
-    def __init__(self, model_path: str | None = None):
+    def __init__(self, model_path: str | None = None, imgsz: int | None = None):
         self.model_path = model_path or settings.TRAFFIC_MODEL_PATH
+        # Cikarim cozunurlugu: kucuk = daha hizli (CPU), buyuk = daha dogru.
+        self.imgsz = imgsz
         self.model = YOLO(self.model_path)
         # Her ID'ye sabit bir renk atayarak gorsel takibi kolaylastiriyoruz.
         self._id_colors: dict[int, tuple[int, int, int]] = {}
@@ -105,7 +107,7 @@ class TrafficTracker:
 
         # stream=True ile bellek dostu sekilde kare kare sonuc uretiyoruz.
         # persist=True ile ID'ler kareler arasinda korunuyor.
-        results = self.model.track(
+        track_kwargs = dict(
             source=source,
             stream=True,
             persist=True,
@@ -115,6 +117,9 @@ class TrafficTracker:
             tracker=settings.TRACKER_CONFIG,
             verbose=False,
         )
+        if self.imgsz:
+            track_kwargs["imgsz"] = self.imgsz
+        results = self.model.track(**track_kwargs)
 
         writer = None
         try:
@@ -133,7 +138,7 @@ class TrafficTracker:
                     writer.write(annotated)
 
                 if show:
-                    cv2.imshow("RoadGuardian-AI: Trafik Takibi", annotated)
+                    cv2.imshow("RoadGuardian-CV: Trafik Takibi", annotated)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
 

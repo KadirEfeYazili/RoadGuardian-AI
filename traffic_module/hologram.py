@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - Hologram Plaka Overlay Modulu
+RoadGuardian-CV - Hologram Plaka Overlay Modulu
 
 Tespit edilen plakayi, aracin USTUNDE havada duran, GERCEK BIR PLAKA gibi
 gorunen ama holografik (yari saydam + parlayan) bir panelde gosterir:

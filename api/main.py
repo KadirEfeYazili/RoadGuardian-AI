@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - FastAPI Uygulamasi
+RoadGuardian-CV - FastAPI Uygulamasi
 
 Trafik ve surucu modullerinin urettigi verileri dis dunyaya (UI dashboard,
 diger servisler) sunan REST API'nin temel iskeleti.
@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from core.config import settings  # noqa: E402
 
 app = FastAPI(
-    title="RoadGuardian-AI API",
+    title="RoadGuardian-CV API",
     description="Yol guvenligi ve yapay zeka sistemi icin REST API.",
     version="0.1.0",
 )
@@ -28,7 +28,7 @@ app = FastAPI(
 @app.get("/")
 def root():
     """Kok endpoint - kisa karsilama mesaji."""
-    return {"message": "RoadGuardian-AI API'ye hos geldiniz.", "docs": "/docs"}
+    return {"message": "RoadGuardian-CV API'ye hos geldiniz.", "docs": "/docs"}
 
 
 @app.get("/status")
@@ -36,7 +36,7 @@ def status():
     """Sistemin calistigini dogrulayan basit saglik kontrolu endpoint'i."""
     return {
         "status": "ok",
-        "service": "RoadGuardian-AI",
+        "service": "RoadGuardian-CV",
         "version": app.version,
         "modules": {
             "traffic_module": "ready",

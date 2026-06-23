@@ -1,5 +1,5 @@
 """
-RoadGuardian-AI - Plaka Tanima + Hologram Canli Goruntuleyici (ANPR)
+RoadGuardian-CV - Plaka Tanima + Hologram Canli Goruntuleyici (ANPR)
 
 Bu betik trafik videosunu isler ve:
     1. Araclari YOLO ile takip eder (her araca kalici ID).
@@ -26,16 +26,20 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from core.config import settings  # noqa: E402
 from traffic_module.tracker import TrafficTracker  # noqa: E402
 from traffic_module.plate_tracker import PlateTracker  # noqa: E402
-from traffic_module.plate_ocr import PlateReader  # noqa: E402
+from traffic_module.plate_ocr import PlateReader, infer_country_code  # noqa: E402
 from traffic_module.hologram import (  # noqa: E402
     draw_plate_hologram,
     draw_vehicle_card,
     HOLO_CYAN,
 )
-from traffic_module.vehicle_info import type_label, estimate_color  # noqa: E402
+from traffic_module.vehicle_info import (  # noqa: E402
+    type_label,
+    VehicleColorTracker,
+    compute_wb_scale,
+)
 
 DISPLAY_MAX_WIDTH = 1280
-WINDOW_NAME = "RoadGuardian-AI | Plaka Hologram (cikis: q)"
+WINDOW_NAME = "RoadGuardian-CV | Plaka Hologram (cikis: q)"
 
 
 def _fit_to_screen(frame):
@@ -77,7 +81,7 @@ def _draw_vehicle_box(frame, box, label):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RoadGuardian-AI ANPR + Hologram")
+    parser = argparse.ArgumentParser(description="RoadGuardian-CV ANPR + Hologram")
     parser.add_argument(
         "--video", default=str(settings.PLATE_VIDEO_PATH),
         help="Islenecek video yolu (varsayilan: plaka test videosu).",
@@ -93,20 +97,46 @@ def main():
         "--no-card", action="store_true",
         help="Arac tip/renk bilgi kartini gosterme.",
     )
+    parser.add_argument(
+        "--country", default=None,
+        help="Varsayilan/zorunlu ulke kodu (orn. TR, GB, DE, RU...). "
+             "Varsayilan: config PLATE_COUNTRY_CODE.",
+    )
+    parser.add_argument(
+        "--country-mode", default=settings.PLATE_COUNTRY_MODE,
+        choices=["auto", "force"],
+        help="auto: ulkeyi plaka biciminden tahmin et (belirsizse --country'e "
+             "duser). force: her plakaya --country yaz (tek-ulkeli videolar icin).",
+    )
+    parser.add_argument(
+        "--perf", default=settings.PERF_MODE,
+        choices=list(settings.PERF_PRESETS.keys()),
+        help="Performans modu: fast (en hizli) / balanced / accurate (en dogru). "
+             "Model, cikarim cozunurlugu ve plaka tespit sikligini belirler.",
+    )
     args = parser.parse_args()
+    force_country = args.country_mode == "force"
+
+    # Performans on ayarini coz: model + imgsz + plaka tespit araligi.
+    preset = settings.PERF_PRESETS.get(args.perf, settings.PERF_PRESETS["balanced"])
+    track_model = settings.MODELS_DIR / preset["track_model"]
 
     print(f"Video        : {args.video}")
+    print(f"Perf modu    : {args.perf}  (model={preset['track_model']}, "
+          f"imgsz={preset['track_imgsz']}, plaka tespit/kare={preset['plate_detect_interval']})")
     print("Modeller yukleniyor (ilk OCR calismasinda model indirilebilir)...")
 
-    tracker = TrafficTracker()
+    tracker = TrafficTracker(model_path=track_model, imgsz=preset["track_imgsz"])
     # Plaka okuyucu + arac-plaka onbellegi.
-    plate_tracker = PlateTracker(reader=PlateReader())
+    plate_tracker = PlateTracker(
+        reader=PlateReader(), detect_interval=preset["plate_detect_interval"]
+    )
 
     if not args.no_show:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     writer = None
-    color_cache: dict[int, tuple[str, tuple[int, int, int]]] = {}
+    color_tracker = VehicleColorTracker()
     print("Isleniyor... cikmak icin 'q'.")
     try:
         # annotate=False -> temiz kareyi alip kendi overlay'imizi ciziyoruz.
@@ -116,34 +146,40 @@ def main():
             frame = result.orig_img
             vehicles = _vehicles_from_result(result)
             boxes_only = {tid: b for tid, (b, _) in vehicles.items()}
+            # Kare seviyesinde beyaz dengesi (renk tahmininde illuminant duzeltme).
+            wb = compute_wb_scale(frame) if not args.no_card else None
 
             # Plakalari tespit/okuma (onbellekli, kisitli OCR).
             plate_tracker.update(frame, boxes_only)
             active_ids = set(vehicles.keys())
             plate_tracker.cleanup(active_ids)
-            # Ekrandan cikan araclarin renk onbellegini de temizle.
-            for gone in [t for t in color_cache if t not in active_ids]:
-                del color_cache[gone]
+            color_tracker.cleanup(active_ids)
 
             # Cizim: arac kutusu + bilgi karti (tip/renk) + plaka hologrami.
             for tid, (box, cls_name) in vehicles.items():
                 _draw_vehicle_box(frame, box, f"ID:{tid} {cls_name}")
 
                 if not args.no_card:
-                    # Renk arac ID basina bir kez hesaplanip onbelleklenir (titremesin).
-                    if tid not in color_cache:
-                        x1, y1, x2, y2 = box
-                        color_cache[tid] = estimate_color(frame[y1:y2, x1:x2])
-                    color_name, color_bgr = color_cache[tid]
+                    # Renk en yakin (en buyuk) goruntuden hesaplanir, titremez.
+                    x1, y1, x2, y2 = box
+                    color_name, color_bgr = color_tracker.update(
+                        tid, frame[y1:y2, x1:x2], wb_scale=wb
+                    )
                     draw_vehicle_card(
                         frame, box, type_label(cls_name), color_name, color_bgr
                     )
 
                 rec = plate_tracker.get(tid)
                 if rec is not None:
+                    # Ulke kodu: auto modda plaka BICIMINDEN belirlenir (belirsizse
+                    # --country'e duser); force modda dogrudan --country kullanilir.
+                    country = infer_country_code(
+                        rec.text, default=args.country, force=force_country
+                    )
                     draw_plate_hologram(
                         frame, box, rec.text,
                         plate_box=rec.plate_box, conf=rec.conf,
+                        country_code=country,
                     )
 
             if args.save:
