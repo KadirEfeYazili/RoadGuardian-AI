@@ -10,6 +10,9 @@ Tasarim:
   (en guvenli okuma) yazilir; kilitlenmeden kareden cikan araclar ise ayrilirken
   o ana kadarki en iyi okumayla yazilir (hizli gecen araclar kaybolmasin).
 - Dosya bicimi uzantidan secilir: ``.jsonl`` -> JSON Lines, aksi halde CSV.
+- CSV, Excel (TR yereli) ile sorunsuz acilsin diye NOKTALI VIRGUL (';') ayiraci
+  ve UTF-8 BOM ile yazilir; boylece sutunlar dogru ayrisir ve Turkce karakterler
+  (Gumus, OTOBUS...) bozulmaz.
 - Her satir aninda diske yazilir (flush); calisma yarida kesilse de kayit kalir.
 """
 
@@ -23,6 +26,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from core.config import settings  # noqa: E402
+
+# CSV ayiraci: TR yereli Excel ';' bekler (',' kullaninca her sey tek sutuna duser).
+_CSV_DELIM = ";"
 
 # CSV/JSONL satir alanlari (sira sabittir).
 _FIELDS = [
@@ -87,10 +93,20 @@ class PlateLogger:
         self._count = 0
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Yeni CSV dosyasina UTF-8 BOM yaz (Excel'in TR karakterleri dogru
+        # cozmesi icin). Mevcut dosyaya eklerken BOM tekrar yazilmasin diye
+        # yalnizca dosya yoksa/bossa 'utf-8-sig' kullan.
+        is_new = not self.path.exists() or self.path.stat().st_size == 0
+        if self.is_jsonl:
+            encoding = "utf-8"
+        else:
+            encoding = "utf-8-sig" if is_new else "utf-8"
+        self._fh = open(self.path, "a", newline="", encoding=encoding)
         # CSV ise basligi bir kez yaz (dosya yoksa/bossa).
-        self._fh = open(self.path, "a", newline="", encoding="utf-8")
-        if not self.is_jsonl and self.path.stat().st_size == 0:
-            csv.DictWriter(self._fh, fieldnames=_FIELDS).writeheader()
+        if not self.is_jsonl and is_new:
+            csv.DictWriter(
+                self._fh, fieldnames=_FIELDS, delimiter=_CSV_DELIM
+            ).writeheader()
             self._fh.flush()
 
     def already_logged(self, track_id: int) -> bool:
@@ -107,7 +123,12 @@ class PlateLogger:
         if self.is_jsonl:
             self._fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         else:
-            csv.DictWriter(self._fh, fieldnames=_FIELDS).writerow(row)
+            # TR Excel ondalik ayiraci virgul bekler: 0.268 -> "0,268" (ayirac ';'
+            # oldugu icin guvenli) ki guven degeri SAYI olarak gorunsun, metin degil.
+            row = {**row, "conf": str(row["conf"]).replace(".", ",")}
+            csv.DictWriter(
+                self._fh, fieldnames=_FIELDS, delimiter=_CSV_DELIM
+            ).writerow(row)
         self._fh.flush()
         self._count += 1
         return True
