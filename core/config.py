@@ -111,6 +111,12 @@ class Config:
     OCR_MIN_PLATE_CHARS = 5
     # Tek bir OCR parcasinin oya katilmasi icin gereken min guven.
     OCR_FRAGMENT_MIN_CONF = 0.10
+    # Plaka tespit kutusu cogu zaman karakterlere YAPISIK gelir; ozellikle
+    # hareketli araclarda kutu biraz kayinca soldaki haneler ("34" gibi) kirpilir.
+    # OCR'dan once kutu, kendi GENISLIK/YUKSEKLIGININ bu oraninda her yone genisletilir
+    # (kareyi tasmadan kirpilir). Yatayda biraz daha fazla pay, kenar karakterleri kurtarir.
+    OCR_CROP_PAD_X = 0.12
+    OCR_CROP_PAD_Y = 0.22
 
     # --- Plaka Dogrulama (Validation) Ayarlari ---
     # Plaka EKRANDA gosterilmeden once en az bu kadar okuma (oy) birikmeli.

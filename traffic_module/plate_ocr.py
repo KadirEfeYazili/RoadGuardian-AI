@@ -382,8 +382,20 @@ class PlateReader:
     def read_plate_from_box(
         self, frame, box: tuple[int, int, int, int]
     ) -> tuple[str, float] | None:
-        """Kare + plaka kutusu verilince ilgili kirpintiyi okur."""
+        """Kare + plaka kutusu verilince ilgili kirpintiyi okur.
+
+        Tespit kutusu karakterlere yapisik gelir; ozellikle hareketli araclarda
+        kutu biraz kayinca soldaki haneler ("34" gibi) kirpilir. Bu yuzden kutu,
+        OCR'dan once kendi boyutunun ``OCR_CROP_PAD_*`` orani kadar her yone
+        genisletilir (kare sinirlarini tasmadan), boylece kenar karakterler kurtarilir.
+        """
         x1, y1, x2, y2 = box
-        x1, y1 = max(0, x1), max(0, y1)
+        h, w = frame.shape[:2]
+        pad_x = int((x2 - x1) * settings.OCR_CROP_PAD_X)
+        pad_y = int((y2 - y1) * settings.OCR_CROP_PAD_Y)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(w, x2 + pad_x)
+        y2 = min(h, y2 + pad_y)
         crop = frame[y1:y2, x1:x2]
         return self.read_plate(crop)

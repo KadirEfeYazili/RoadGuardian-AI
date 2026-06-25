@@ -148,6 +148,12 @@ class RoadGuardianUI:
         ttk.Checkbutton(
             frame_opt, text="Arac tip/renk bilgi kartini goster",
             variable=self.card_var,
+        ).pack(anchor="w", padx=8, pady=2)
+
+        self.log_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frame_opt, text="Plaka kaydini output/ klasorune .csv yaz",
+            variable=self.log_var,
         ).pack(anchor="w", padx=8, pady=(2, 8))
 
         # --- 4) Baslat ---
@@ -261,6 +267,8 @@ class RoadGuardianUI:
             cmd += ["--save", str(out)]
         if not self.card_var.get():
             cmd += ["--no-card"]
+        if self.log_var.get():
+            cmd += ["--log"]
 
         try:
             proc = subprocess.Popen(cmd, cwd=str(ROOT))

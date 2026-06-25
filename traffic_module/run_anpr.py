@@ -37,6 +37,7 @@ from traffic_module.vehicle_info import (  # noqa: E402
     VehicleColorTracker,
     compute_wb_scale,
 )
+from traffic_module.plate_log import PlateLogger, PlateEvent  # noqa: E402
 
 DISPLAY_MAX_WIDTH = 1280
 WINDOW_NAME = "RoadGuardian-CV | Plaka Hologram (cikis: q)"
@@ -80,6 +81,23 @@ def _draw_vehicle_box(frame, box, label):
     )
 
 
+def _log_plate(logger, frame_idx, tid, rec, args, force_country,
+               last_type, last_color):
+    """Bir aracin plaka okumasini olay kaydina yazar (arac basina bir kez)."""
+    country = infer_country_code(rec.text, default=args.country, force=force_country)
+    logger.log(PlateEvent(
+        frame=frame_idx,
+        track_id=tid,
+        plate=rec.text,
+        country=country or "",
+        type=last_type.get(tid, ""),
+        color=last_color.get(tid, ""),
+        conf=rec.conf,
+        votes=rec.votes,
+        locked=rec.locked,
+    ))
+
+
 def main():
     parser = argparse.ArgumentParser(description="RoadGuardian-CV ANPR + Hologram")
     parser.add_argument(
@@ -107,6 +125,11 @@ def main():
         choices=["auto", "force"],
         help="auto: ulkeyi plaka biciminden tahmin et (belirsizse --country'e "
              "duser). force: her plakaya --country yaz (tek-ulkeli videolar icin).",
+    )
+    parser.add_argument(
+        "--log", nargs="?", const="__AUTO__", default=None,
+        help="Okunan plakalari dosyaya kaydet (CSV; uzanti .jsonl ise JSON Lines). "
+             "Yol verilmezse output/<video>_plates.csv kullanilir.",
     )
     parser.add_argument(
         "--perf", default=settings.PERF_MODE,
@@ -137,12 +160,29 @@ def main():
 
     writer = None
     color_tracker = VehicleColorTracker()
+
+    # Plaka olay kaydi (istege bagli). Yol verilmezse output/<video>_plates.csv.
+    logger = None
+    if args.log is not None:
+        log_path = (
+            settings.OUTPUT_DIR / f"{Path(args.video).stem}_plates.csv"
+            if args.log == "__AUTO__" else Path(args.log)
+        )
+        logger = PlateLogger(log_path)
+        print(f"Plaka kaydi : {log_path}")
+
+    # Arac basina son gorulen tip/renk (kareden cikinca kaydi tamamlamak icin).
+    last_type: dict[int, str] = {}
+    last_color: dict[int, str] = {}
+    frame_idx = 0
+
     print("Isleniyor... cikmak icin 'q'.")
     try:
         # annotate=False -> temiz kareyi alip kendi overlay'imizi ciziyoruz.
         for result in tracker.track_video(
             video_path=args.video, show=False, annotate=False
         ):
+            frame_idx += 1
             frame = result.orig_img
             vehicles = _vehicles_from_result(result)
             boxes_only = {tid: b for tid, (b, _) in vehicles.items()}
@@ -152,12 +192,25 @@ def main():
             # Plakalari tespit/okuma (onbellekli, kisitli OCR).
             plate_tracker.update(frame, boxes_only)
             active_ids = set(vehicles.keys())
+
+            # Kareden CIKAN araclari, kayit silinmeden once kaydet (kilitlenmeden
+            # cikan hizli araclar da o ana kadarki en iyi okumayla yazilsin).
+            if logger is not None:
+                for tid in list(plate_tracker.records):
+                    if tid in active_ids or logger.already_logged(tid):
+                        continue
+                    rec = plate_tracker.records[tid]
+                    if rec.ready:
+                        _log_plate(logger, frame_idx, tid, rec, args,
+                                   force_country, last_type, last_color)
+
             plate_tracker.cleanup(active_ids)
             color_tracker.cleanup(active_ids)
 
             # Cizim: arac kutusu + bilgi karti (tip/renk) + plaka hologrami.
             for tid, (box, cls_name) in vehicles.items():
                 _draw_vehicle_box(frame, box, f"ID:{tid} {cls_name}")
+                last_type[tid] = type_label(cls_name)
 
                 if not args.no_card:
                     # Renk en yakin (en buyuk) goruntuden hesaplanir, titremez.
@@ -165,6 +218,7 @@ def main():
                     color_name, color_bgr = color_tracker.update(
                         tid, frame[y1:y2, x1:x2], wb_scale=wb
                     )
+                    last_color[tid] = color_name
                     draw_vehicle_card(
                         frame, box, type_label(cls_name), color_name, color_bgr
                     )
@@ -181,6 +235,10 @@ def main():
                         plate_box=rec.plate_box, conf=rec.conf,
                         country_code=country,
                     )
+                    # Plaka kesinlesince (kilit) bir kez kaydet.
+                    if logger is not None and rec.locked:
+                        _log_plate(logger, frame_idx, tid, rec, args,
+                                   force_country, last_type, last_color)
 
             if args.save:
                 if writer is None:
@@ -197,6 +255,9 @@ def main():
         if writer is not None:
             writer.release()
             print(f"Kaydedildi: {args.save}")
+        if logger is not None:
+            logger.close()
+            print(f"Plaka kaydi tamamlandi: {logger.count} arac -> {logger.path}")
         cv2.destroyAllWindows()
 
 
